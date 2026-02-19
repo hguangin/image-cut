@@ -24,13 +24,20 @@ uvicorn main:app --host 0.0.0.0 --port 8080
 
 ---
 
-## API 文件
+## API 文件 (Base URL: `https://image-cut.zeabur.app`)
 
 ### 1. 上傳圖片裁切
 將本地圖片檔案上傳進行處理。
 
 - **Endpoint**: `POST /crop`
 - **Content-Type**: `multipart/form-data`
+
+**cURL 範例**:
+```bash
+curl -X POST https://image-cut.zeabur.app/crop \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@/path/to/your/comic.jpg"
+```
 
 **參數**:
 - `file`: 圖片檔案 (Binary)
@@ -52,6 +59,15 @@ uvicorn main:app --host 0.0.0.0 --port 8080
 
 - **Endpoint**: `POST /crop/url`
 - **Content-Type**: `application/json`
+
+**cURL 範例**:
+```bash
+curl -X POST https://image-cut.zeabur.app/crop/url \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/comic.jpg"
+  }'
+```
 
 **Body**:
 ```json
