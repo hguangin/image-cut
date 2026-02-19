@@ -1,8 +1,12 @@
 import cv2
 import numpy as np
 import base64
-from fastapi import FastAPI, UploadFile, File, HTTPException
 from typing import List
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from pydantic import BaseModel
+import requests
+import io
+from PIL import Image
 
 app = FastAPI()
 
@@ -101,25 +105,6 @@ def process_image(image_bytes: bytes, out_format: str = "webp", quality: int = 8
     final_boxes.sort(key=sort_key)
 
     cropped_images_base64 = []
-import io
-from PIL import Image
-
-def process_image(image_bytes: bytes, out_format: str = "webp", quality: int = 80) -> List[str]:
-    # Validate format
-    valid_formats = {"webp", "jpeg", "png", "jpg"}
-    out_format = out_format.lower()
-    # ... ignoring validation and canny setup in this patch ...
-    
-    # 8. 空間排序 (由上而下、由左至右)
-    def sort_key(box):
-        x, y, w, h = box
-        # 將 Y 座標取概數（約 10% 圖片高度為一個區間），讓同一排的格子能被分在同一組
-        row_tolerance = max(10, int(img_h * 0.1))
-        return ((y // row_tolerance) * row_tolerance, x)
-    
-    final_boxes.sort(key=sort_key)
-
-    cropped_images_base64 = []
 
     for (x, y, w, h) in final_boxes:
         # 動態內縮 (Padding)：為了徹底切掉可能包含在外的黑框線或白邊
@@ -128,6 +113,12 @@ def process_image(image_bytes: bytes, out_format: str = "webp", quality: int = 8
         pad_y = max(5, int(h * 0.015))
         
         # 確保裁切範圍不會變成負數或出界
+        # 注意: 確保裁切出來的寬高大於 0
+        if w <= 2 * pad_x or h <= 2 * pad_y:
+            # 如果框太小，就不內縮
+            pad_x = 0
+            pad_y = 0
+
         crop_y_start = min(y + pad_y, y + h)
         crop_y_end = max(y + h - pad_y, crop_y_start)
         crop_x_start = min(x + pad_x, x + w)
@@ -135,6 +126,9 @@ def process_image(image_bytes: bytes, out_format: str = "webp", quality: int = 8
         
         # 進行裁切
         crop = img[crop_y_start:crop_y_end, crop_x_start:crop_x_end]
+
+        if crop.size == 0:
+            continue
 
         # 將 OpenCV 的 BGR 轉換為 Pillow 支援的 RGB
         crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
@@ -165,11 +159,6 @@ def process_image(image_bytes: bytes, out_format: str = "webp", quality: int = 8
 
     return cropped_images_base64
 
-
-from pydantic import BaseModel
-from fastapi import Form
-import requests
-
 class ImageURL(BaseModel):
     url: str
     format: str = "webp"
@@ -188,7 +177,6 @@ async def crop_panels(
     
     try:
         cropped_panels = process_image(content, format, quality)
-        # Returns a JSON array of strings
         return cropped_panels
     except HTTPException as he:
         raise he
