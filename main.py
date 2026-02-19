@@ -110,8 +110,18 @@ def process_image(image_bytes: bytes, out_format: str = "webp", quality: int = 8
         x, y, w, h = cv2.boundingRect(contour)
         
         # 6. Crop the image
-        # Add a small padding? The requirements said "precisely crop the 4 regions based on contours".
-        crop = img[y:y+h, x:x+w]
+        # 動態內縮 (Padding)：為了克服極細黑框或 16:9 獨立框可能殘留黑邊的問題
+        # 我們將四邊各自往內縮減 4 個像素 (可以調整這個數值以達到最佳效果)
+        padding = 4
+        
+        # 確保裁切範圍不會變成負數或出界
+        crop_y_start = min(y + padding, y + h)
+        crop_y_end = max(y + h - padding, crop_y_start)
+        crop_x_start = min(x + padding, x + w)
+        crop_x_end = max(x + w - padding, crop_x_start)
+        
+        # 進行裁切
+        crop = img[crop_y_start:crop_y_end, crop_x_start:crop_x_end]
 
         # 7. Compress
         success, encoded_img = cv2.imencode(encode_ext, crop, encode_param)
