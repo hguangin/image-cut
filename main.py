@@ -101,20 +101,25 @@ def process_image(image_bytes: bytes, out_format: str = "webp", quality: int = 8
     final_boxes.sort(key=sort_key)
 
     cropped_images_base64 = []
+import io
+from PIL import Image
 
-    # Setup encoding parameters based on requested format
-    encode_ext = f".{out_format}"
-    encode_param = []
-    if out_format == "webp":
-        encode_param = [int(cv2.IMWRITE_WEBP_QUALITY), quality]
-    elif out_format == "jpeg":
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
-    elif out_format == "png":
-        # PNG compression ranges from 0 (no compression, fast) to 9 (max compression, slow). 
-        # It is lossless, so "quality" here just means file size vs processing time.
-        # We map quality 1-100 to compression 9-0 (where quality 100 means compression 0, max filesize, fastest).
-        compression = round(9 * (100 - quality) / 100)
-        encode_param = [int(cv2.IMWRITE_PNG_COMPRESSION), compression]
+def process_image(image_bytes: bytes, out_format: str = "webp", quality: int = 80) -> List[str]:
+    # Validate format
+    valid_formats = {"webp", "jpeg", "png", "jpg"}
+    out_format = out_format.lower()
+    # ... ignoring validation and canny setup in this patch ...
+    
+    # 8. 空間排序 (由上而下、由左至右)
+    def sort_key(box):
+        x, y, w, h = box
+        # 將 Y 座標取概數（約 10% 圖片高度為一個區間），讓同一排的格子能被分在同一組
+        row_tolerance = max(10, int(img_h * 0.1))
+        return ((y // row_tolerance) * row_tolerance, x)
+    
+    final_boxes.sort(key=sort_key)
+
+    cropped_images_base64 = []
 
     for (x, y, w, h) in final_boxes:
         # 動態內縮 (Padding)：為了徹底切掉可能包含在外的黑框線或白邊
@@ -131,17 +136,35 @@ def process_image(image_bytes: bytes, out_format: str = "webp", quality: int = 8
         # 進行裁切
         crop = img[crop_y_start:crop_y_end, crop_x_start:crop_x_end]
 
-        # 7. Compress
-        success, encoded_img = cv2.imencode(encode_ext, crop, encode_param)
+        # 將 OpenCV 的 BGR 轉換為 Pillow 支援的 RGB
+        crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(crop_rgb)
         
-        if not success:
-            continue
-            
-        # 8. Convert to Base64
-        base64_str = base64.b64encode(encoded_img.tobytes()).decode('utf-8')
+        # 準備記憶體快取來接產生二進位資料
+        buffer = io.BytesIO()
+
+        # 根據請求格式套入 Pillow 最極限的壓縮引數
+        if out_format == "webp":
+            # method=6 代表讓編碼器花最多的時間去找尋「最小檔案」的路徑
+            pil_img.save(buffer, format="WEBP", quality=quality, method=6)
+        elif out_format == "jpeg":
+            # optimize=True: 優化霍夫曼編碼表
+            # progressive=True: 漸進式網路載入
+            # subsampling=0: 4:4:4 無損色彩取樣 (防止漫畫線條色溢)
+            pil_img.save(buffer, format="JPEG", quality=quality, optimize=True, progressive=True, subsampling=0)
+        elif out_format == "png":
+            # PNG quality map
+            compression_level = max(0, min(9, round(9 * (100 - quality) / 100)))
+            # optimize=True: 疊加 zlib 多種嘗試找最小解
+            pil_img.save(buffer, format="PNG", optimize=True, compress_level=compression_level)
+
+        # 轉 Base64 回傳
+        encoded_bytes = buffer.getvalue()
+        base64_str = base64.b64encode(encoded_bytes).decode('utf-8')
         cropped_images_base64.append(base64_str)
 
     return cropped_images_base64
+
 
 from pydantic import BaseModel
 from fastapi import Form
