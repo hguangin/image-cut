@@ -18,12 +18,12 @@ def process_image(image_bytes: bytes) -> List[str]:
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     # 3. Binarize (Threshold)
-    # Using inverse binary threshold assuming black frames on white background
-    # Gray > 200 becomes 0 (Black background), Gray <= 200 becomes 255 (White frames)
-    _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+    # 將閾值降到 80，這樣才能只捕捉到「真正的純黑邊框」，
+    # 避免像暗色房間那種偏暗的背景也被判定為邊框而糊在一起。
+    _, thresh = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
 
     # 4. Find Contours with Hierarchy
-    # Use RETR_CCOMP to get a 2-level hierarchy (External + Internal Holes)
+    # 使用 RETR_CCOMP 來取得內外兩層的輪廓關係
     contours, hierarchy = cv2.findContours(thresh, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
 
     if hierarchy is None:
@@ -32,40 +32,30 @@ def process_image(image_bytes: bytes) -> List[str]:
     hierarchy = hierarchy[0]
     candidate_panels = []
 
-    # Iterate through contours to find the frames
-    # Hierarchy format: [Next, Previous, First_Child, Parent]
+    # 5. 找出所有的內部視窗 (洞)
     for i, contour in enumerate(contours):
-        # We are looking for the OUTER frame of a panel.
-        # It should have a valid child (the inner edge of the frame) or be a solid block.
-        # But mostly comic frames are drawn as lines, so they are double contours in CCOMP.
-        
-        # Filter by area to avoid noise
-        if cv2.contourArea(contour) < 5000:  # Adjust threshold based on expected image size
+        # 過濾掉太小的雜點
+        if cv2.contourArea(contour) < 5000:
             continue
 
-        # Check if it has a child (First_Child != -1)
+        # 取得這個輪廓的「第一個子輪廓 (First Child)」的索引
         child_idx = hierarchy[i][2]
         
         if child_idx != -1:
-            # It has a child, meaning it's likely a frame.
-            # We want to crop to the CHILD's bounding box (the inner content).
-            inner_contour = contours[child_idx]
-            candidate_panels.append(inner_contour)
+            # 如果有子輪廓（代表這是一個有洞的框），必須迴圈找出「所有」子輪廓。
+            # 因為四格漫畫的十字黑框是一個單一的連通區塊，裡面會同時包含 4 個洞（4 個畫面）。
+            current_child = child_idx
+            while current_child != -1:
+                inner_contour = contours[current_child]
+                # 過濾掉洞裡面太小的區塊
+                if cv2.contourArea(inner_contour) > 5000:
+                    candidate_panels.append(inner_contour)
+                # 換到下一個兄弟節點（下一個洞）
+                current_child = hierarchy[current_child][0]
         else:
-            # It has no child. It might be a solid black block or the frame line is too thin/broken.
-            # In this case, we use the contour itself but maybe shrink it slightly?
-            # For now, let's treat it as a valid panel candidate check its parent.
-            # If it has a parent, it might be the inner content itself!
+            # 如果沒有子輪廓但本身夠大，且沒有父節點，當作備用候選（例如實心或者非框線的圖）
             parent_idx = hierarchy[i][3]
-            if parent_idx != -1:
-                # It is an inner contour. We might have already added it via the parent check above?
-                # The parent check ensures we only add unique panels. 
-                # If we iterate all, we might double count.
-                # Let's stick to: "Find Outer Frame -> Use Inner Box".
-                pass
-            else:
-                 # Top level contour with no child.
-                 # Could be a panel without a clear border (just content).
+            if parent_idx == -1:
                  candidate_panels.append(contour)
 
     # Sort candidates by area to find the main 4
