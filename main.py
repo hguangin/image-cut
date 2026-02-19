@@ -28,67 +28,77 @@ def process_image(image_bytes: bytes, out_format: str = "webp", quality: int = 8
 
     # 2. Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # 3. Binarize (Threshold)
-    # 將閾值降到 80，這樣才能只捕捉到「真正的純黑邊框」，
-    # 避免像暗色房間那種偏暗的背景也被判定為邊框而糊在一起。
-    _, thresh = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
-
-    # 4. Find Contours with Hierarchy
-    # 使用 RETR_CCOMP 來取得內外兩層的輪廓關係
-    contours, hierarchy = cv2.findContours(thresh, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-
-    if hierarchy is None:
-        return []
-
-    hierarchy = hierarchy[0]
-    candidate_panels = []
-
-    # 5. 找出所有的內部視窗 (洞)
-    for i, contour in enumerate(contours):
-        # 過濾掉太小的雜點
-        if cv2.contourArea(contour) < 5000:
-            continue
-
-        # 取得這個輪廓的「第一個子輪廓 (First Child)」的索引
-        child_idx = hierarchy[i][2]
-        
-        if child_idx != -1:
-            # 如果有子輪廓（代表這是一個有洞的框），必須迴圈找出「所有」子輪廓。
-            # 因為四格漫畫的十字黑框是一個單一的連通區塊，裡面會同時包含 4 個洞（4 個畫面）。
-            current_child = child_idx
-            while current_child != -1:
-                inner_contour = contours[current_child]
-                # 過濾掉洞裡面太小的區塊
-                if cv2.contourArea(inner_contour) > 5000:
-                    candidate_panels.append(inner_contour)
-                # 換到下一個兄弟節點（下一個洞）
-                current_child = hierarchy[current_child][0]
-        else:
-            # 如果沒有子輪廓但本身夠大，且沒有父節點，當作備用候選（例如實心或者非框線的圖）
-            parent_idx = hierarchy[i][3]
-            if parent_idx == -1:
-                 candidate_panels.append(contour)
-
-    # Sort candidates by area to find the main 4
-    candidate_panels.sort(key=cv2.contourArea, reverse=True)
-    main_contours = candidate_panels[:4]
-
-    # Sort the 4 contours spatially
-    bounding_boxes = [cv2.boundingRect(c) for c in main_contours]
     
-    # Custom sort: Round Y to nearest 50 pixels to group into rows, then sort by X
+    img_h, img_w = gray.shape
+    img_area = img_h * img_w
+
+    # 3. 邊緣偵測 (Canny Edge Detection)
+    # 先做一點模糊化，減少圖片內部的雜訊與紋理干擾
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    # 使用 Canny 找出所有物體、框線的邊緣
+    edges = cv2.Canny(blurred, 30, 150)
+
+    # 4. 膨脹邊緣 (Dilate)
+    # 有些黑框可能不連續或有缺口，透過膨脹可以把它們連起來
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    edges = cv2.dilate(edges, kernel, iterations=2)
+
+    # 5. 尋找所有輪廓 (不分階層)
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+    # 6. 利用邊界框 (Bounding Box) 面積初步過濾
+    # 四格漫畫的其中一格，面積通常介於整張圖的 3% 到 85% 之間
+    candidate_boxes = []
+    for c in contours:
+        x, y, w, h = cv2.boundingRect(c)
+        area = w * h
+        # 排除太小的雜點（如文字、人臉）與太大的整張圖外框
+        if img_area * 0.03 < area < img_area * 0.85:
+            candidate_boxes.append((x, y, w, h, area))
+
+    # 依面積由大到小排序
+    candidate_boxes.sort(key=lambda b: b[4], reverse=True)
+
+    # 7. 非極大值抑制 (NMS, Non-Maximum Suppression)
+    # 漫畫最外層的框一定最先被挑選。而框內部的次要物件（如對話框）雖然有自己的框，
+    # 但會完全重疊在大框裡面，這個步驟會把它們徹底剔除。
+    final_boxes = []
+    for box in candidate_boxes:
+        x, y, w, h, area = box
+        
+        is_overlap = False
+        for fbox in final_boxes:
+            fx, fy, fw, fh = fbox
+            
+            # 計算交集範圍
+            ix_min = max(x, fx)
+            iy_min = max(y, fy)
+            ix_max = min(x + w, fx + fw)
+            iy_max = min(y + h, fy + fh)
+            
+            # 如果有交集
+            if ix_max > ix_min and iy_max > iy_min:
+                inter_area = (ix_max - ix_min) * (iy_max - iy_min)
+                # 如果重疊面積大於「當前處理框（較小者）」的 30%
+                # 代表這個框是已經存在的大框的附屬物，必須剔除
+                if inter_area > 0.3 * area:
+                    is_overlap = True
+                    break
+                    
+        if not is_overlap:
+            final_boxes.append((x, y, w, h))
+            
+    # 取最大的四塊 (確保就算遇到五格也只取主要的四格)
+    final_boxes = final_boxes[:4]
+
+    # 8. 空間排序 (由上而下、由左至右)
     def sort_key(box):
         x, y, w, h = box
-        return (round(y / 50) * 50, x)
+        # 將 Y 座標取概數（約 10% 圖片高度為一個區間），讓同一排的格子能被分在同一組
+        row_tolerance = max(10, int(img_h * 0.1))
+        return ((y // row_tolerance) * row_tolerance, x)
     
-    # Zip contours with their boxes
-    contours_with_boxes = list(zip(main_contours, bounding_boxes))
-    # Sort based on the box
-    contours_with_boxes.sort(key=lambda cb: sort_key(cb[1]))
-    
-    # Extract just the sorted contours
-    sorted_contours = [cb[0] for cb in contours_with_boxes]
+    final_boxes.sort(key=sort_key)
 
     cropped_images_base64 = []
 
@@ -106,19 +116,17 @@ def process_image(image_bytes: bytes, out_format: str = "webp", quality: int = 8
         compression = round(9 * (100 - quality) / 100)
         encode_param = [int(cv2.IMWRITE_PNG_COMPRESSION), compression]
 
-    for contour in sorted_contours:
-        x, y, w, h = cv2.boundingRect(contour)
-        
-        # 6. Crop the image
-        # 動態內縮 (Padding)：為了克服極細黑框或 16:9 獨立框可能殘留黑邊的問題
-        # 我們將四邊各自往內縮減 4 個像素 (可以調整這個數值以達到最佳效果)
-        padding = 4
+    for (x, y, w, h) in final_boxes:
+        # 動態內縮 (Padding)：為了徹底切掉可能包含在外的黑框線或白邊
+        # 使用動態比例內縮 (寬度或高度的 1.5%，但最少 5 像素)
+        pad_x = max(5, int(w * 0.015))
+        pad_y = max(5, int(h * 0.015))
         
         # 確保裁切範圍不會變成負數或出界
-        crop_y_start = min(y + padding, y + h)
-        crop_y_end = max(y + h - padding, crop_y_start)
-        crop_x_start = min(x + padding, x + w)
-        crop_x_end = max(x + w - padding, crop_x_start)
+        crop_y_start = min(y + pad_y, y + h)
+        crop_y_end = max(y + h - pad_y, crop_y_start)
+        crop_x_start = min(x + pad_x, x + w)
+        crop_x_end = max(x + w - pad_x, crop_x_start)
         
         # 進行裁切
         crop = img[crop_y_start:crop_y_end, crop_x_start:crop_x_end]
