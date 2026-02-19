@@ -3,22 +3,19 @@ import base64
 import os
 import sys
 
-def test_crop(image_path):
-    url = "http://127.0.0.1:8000/crop"
+def test_crop_url(image_url):
+    url = "http://127.0.0.1:8000/crop/url"
+    print(f"Requesting crop for URL: {image_url}")
     
-    if not os.path.exists(image_path):
-        print(f"Error: File '{image_path}' not found.")
+    try:
+        response = requests.post(url, json={"url": image_url})
+    except requests.exceptions.ConnectionError:
+        print("Error: Could not connect to the server.")
         return
 
-    print("Uploading image...")
-    with open(image_path, "rb") as f:
-        files = {"file": f}
-        try:
-            response = requests.post(url, files=files)
-        except requests.exceptions.ConnectionError:
-            print("Error: Could not connect to the server. Make sure 'uvicorn main:app' is running.")
-            return
+    process_response(response)
 
+def process_response(response):
     if response.status_code == 200:
         data = response.json()
         if isinstance(data, list):
@@ -44,8 +41,37 @@ def test_crop(image_path):
     else:
         print(f"Error: {response.status_code} - {response.text}")
 
+def test_crop_file(image_path):
+    url = "http://127.0.0.1:8000/crop"
+    
+    if not os.path.exists(image_path):
+        print(f"Error: File '{image_path}' not found.")
+        return
+
+    print("Uploading image file...")
+    with open(image_path, "rb") as f:
+        files = {"file": f}
+        try:
+            response = requests.post(url, files=files)
+        except requests.exceptions.ConnectionError:
+            print("Error: Could not connect to the server.")
+            return
+    process_response(response)
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python test_client.py <path_to_image>")
+        print("Usage:")
+        print("  Test File: python test_client.py file <path_to_image>")
+        print("  Test URL:  python test_client.py url <image_url>")
     else:
-        test_crop(sys.argv[1])
+        mode = sys.argv[1]
+        if mode == "file" and len(sys.argv) >= 3:
+            test_crop_file(sys.argv[2])
+        elif mode == "url" and len(sys.argv) >= 3:
+            test_crop_url(sys.argv[2])
+        else:
+            # Maintain backward compatibility for a bit or just show usage
+             if os.path.exists(mode):
+                 test_crop_file(mode)
+             else:
+                 print("Invalid arguments.")

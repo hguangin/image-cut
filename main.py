@@ -111,6 +111,12 @@ def process_image(image_bytes: bytes) -> List[str]:
 
     return cropped_images_base64
 
+from pydantic import BaseModel
+import requests
+
+class ImageURL(BaseModel):
+    url: str
+
 @app.post("/crop", response_model=List[str])
 async def crop_panels(file: UploadFile = File(...)):
     if not file.content_type.startswith("image/"):
@@ -125,9 +131,28 @@ async def crop_panels(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image processing failed: {str(e)}")
 
+@app.post("/crop/url", response_model=List[str])
+async def crop_panels_from_url(image: ImageURL):
+    try:
+        response = requests.get(image.url, timeout=10)
+        response.raise_for_status()
+        
+        content_type = response.headers.get("Content-Type", "")
+        if not content_type.startswith("image/"):
+             raise HTTPException(status_code=400, detail="URL does not point to a valid image")
+
+        content = response.content
+        cropped_panels = process_image(content)
+        return cropped_panels
+        
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch image from URL: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image processing failed: {str(e)}")
+
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to the Comic Cropper API. Use POST /crop to upload an image."}
+    return {"message": "Welcome to the Comic Cropper API. Use POST /crop to upload an image or POST /crop/url to provide an image URL."}
 
 if __name__ == "__main__":
     import uvicorn
