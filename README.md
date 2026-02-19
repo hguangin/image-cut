@@ -36,11 +36,17 @@ uvicorn main:app --host 0.0.0.0 --port 8080
 ```bash
 curl -X POST https://image-cut.zeabur.app/crop \
   -H "Content-Type: multipart/form-data" \
-  -F "file=@/path/to/your/comic.jpg"
+  -F "file=@/path/to/your/comic.jpg" \
+  -F "format=jpeg" \
+  -F "quality=90"
 ```
 
 **參數**:
-- `file`: 圖片檔案 (Binary)
+- `file`: 圖片檔案 (Binary, 必填)
+- `format`: 輸出格式 (字串, 預設為 `webp`)。支援 `webp`, `jpeg`, `png`。
+- `quality`: 壓縮品質 (整數, 預設為 `80`)。支援 `1` 到 `100`。
+  - 對於 `webp` 和 `jpeg`，數值越高畫質越好、檔案越大。
+  - 對於 `png` (無損壓縮)，數值會自動映射為對應的壓縮等級。
 
 **回傳範例 (JSON)**:
 ```json
@@ -65,14 +71,18 @@ curl -X POST https://image-cut.zeabur.app/crop \
 curl -X POST https://image-cut.zeabur.app/crop/url \
   -H "Content-Type: application/json" \
   -d '{
-    "url": "https://example.com/comic.jpg"
+    "url": "https://example.com/comic.jpg",
+    "format": "jpeg",
+    "quality": 90
   }'
 ```
 
 **Body**:
 ```json
 {
-  "url": "https://example.com/comic.jpg"
+  "url": "https://example.com/comic.jpg",
+  "format": "jpeg",          // 可選，預設 "webp"
+  "quality": 90              // 可選，預設 80
 }
 ```
 

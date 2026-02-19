@@ -6,7 +6,19 @@ from typing import List
 
 app = FastAPI()
 
-def process_image(image_bytes: bytes) -> List[str]:
+def process_image(image_bytes: bytes, out_format: str = "webp", quality: int = 80) -> List[str]:
+    # Validate format
+    valid_formats = {"webp", "jpeg", "png", "jpg"}
+    out_format = out_format.lower()
+    if out_format not in valid_formats:
+        raise HTTPException(status_code=400, detail=f"Unsupported format: {out_format}. Use webp, jpeg, or png.")
+    
+    if out_format == "jpg":
+        out_format = "jpeg"
+
+    # Clamp quality to 1-100
+    quality = max(1, min(100, quality))
+
     # 1. Read image from bytes
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -80,6 +92,20 @@ def process_image(image_bytes: bytes) -> List[str]:
 
     cropped_images_base64 = []
 
+    # Setup encoding parameters based on requested format
+    encode_ext = f".{out_format}"
+    encode_param = []
+    if out_format == "webp":
+        encode_param = [int(cv2.IMWRITE_WEBP_QUALITY), quality]
+    elif out_format == "jpeg":
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    elif out_format == "png":
+        # PNG compression ranges from 0 (no compression, fast) to 9 (max compression, slow). 
+        # It is lossless, so "quality" here just means file size vs processing time.
+        # We map quality 1-100 to compression 9-0 (where quality 100 means compression 0, max filesize, fastest).
+        compression = round(9 * (100 - quality) / 100)
+        encode_param = [int(cv2.IMWRITE_PNG_COMPRESSION), compression]
+
     for contour in sorted_contours:
         x, y, w, h = cv2.boundingRect(contour)
         
@@ -87,10 +113,8 @@ def process_image(image_bytes: bytes) -> List[str]:
         # Add a small padding? The requirements said "precisely crop the 4 regions based on contours".
         crop = img[y:y+h, x:x+w]
 
-        # 7. Compress to WebP
-        # Quality 80 is a good default for WebP
-        encode_param = [int(cv2.IMWRITE_WEBP_QUALITY), 80]
-        success, encoded_img = cv2.imencode('.webp', crop, encode_param)
+        # 7. Compress
+        success, encoded_img = cv2.imencode(encode_ext, crop, encode_param)
         
         if not success:
             continue
@@ -102,22 +126,31 @@ def process_image(image_bytes: bytes) -> List[str]:
     return cropped_images_base64
 
 from pydantic import BaseModel
+from fastapi import Form
 import requests
 
 class ImageURL(BaseModel):
     url: str
+    format: str = "webp"
+    quality: int = 80
 
 @app.post("/crop", response_model=List[str])
-async def crop_panels(file: UploadFile = File(...)):
+async def crop_panels(
+    file: UploadFile = File(...),
+    format: str = Form("webp"),
+    quality: int = Form(80)
+):
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
     
     content = await file.read()
     
     try:
-        cropped_panels = process_image(content)
+        cropped_panels = process_image(content, format, quality)
         # Returns a JSON array of strings
         return cropped_panels
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image processing failed: {str(e)}")
 
@@ -132,11 +165,13 @@ async def crop_panels_from_url(image: ImageURL):
              raise HTTPException(status_code=400, detail="URL does not point to a valid image")
 
         content = response.content
-        cropped_panels = process_image(content)
+        cropped_panels = process_image(content, image.format, image.quality)
         return cropped_panels
         
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=400, detail=f"Failed to fetch image from URL: {str(e)}")
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image processing failed: {str(e)}")
 
