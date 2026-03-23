@@ -61,7 +61,9 @@ def detect_by_separator_lines(gray: np.ndarray, img: np.ndarray) -> Optional[Lis
         """
         從中間暗帶中挑出最可能是分隔線的 1~2 條。
         策略：優先選最靠近圖片正中間的暗帶。
-        如果有兩條暗帶彼此很近（< 圖寬/高 10%），視為同一組雙線分隔。
+        如果有兩條暗帶彼此很近（< 圖寬/高 5%），視為同一組雙線分隔
+        （即黑框漫畫中「左格右框線 + 右格左框線」的結構）。
+        典型雙框間距約 30~80px，5% 門檻（2000px 圖 = 100px）足夠涵蓋。
         """
         if len(inner_segs) <= 2:
             return inner_segs
@@ -72,7 +74,7 @@ def detect_by_separator_lines(gray: np.ndarray, img: np.ndarray) -> Optional[Lis
         result = [scored[0]]
         if len(scored) > 1:
             gap = abs(scored[1][0] - scored[0][1])
-            if gap < dim_size * 0.1:
+            if gap < dim_size * 0.05:
                 result.append(scored[1])
                 result.sort()
 
@@ -99,43 +101,49 @@ def detect_by_separator_lines(gray: np.ndarray, img: np.ndarray) -> Optional[Lis
     # --- 決定四邊邊界 ---
     # 有外框 → 內容從外框線內側開始
     # 無外框 → 內容從圖片邊緣開始
+    #
+    # anti-aliasing 補償：黑框線兩側各有 ~2px 的灰色漸層過渡區，
+    # threshold=50 只能抓到核心黑色，過渡區的灰色像素會殘留成可見黑邊。
+    # 有偵測到邊框/分隔線時，額外向內縮 2px 跳過過渡區。
+    aa_pad = 2
+
     if v_outer and v_outer[0][0] < w * edge_ratio:
-        left = v_outer[0][1] + 1
+        left = v_outer[0][1] + 1 + aa_pad
     else:
         left = 0
 
     if v_outer and v_outer[-1][1] > w * (1 - edge_ratio):
-        right = v_outer[-1][0] - 1
+        right = v_outer[-1][0] - 1 - aa_pad
     else:
         right = w - 1
 
     if h_outer and h_outer[0][0] < h * edge_ratio:
-        top = h_outer[0][1] + 1
+        top = h_outer[0][1] + 1 + aa_pad
     else:
         top = 0
 
     if h_outer and h_outer[-1][1] > h * (1 - edge_ratio):
-        bottom = h_outer[-1][0] - 1
+        bottom = h_outer[-1][0] - 1 - aa_pad
     else:
         bottom = h - 1
 
     # --- 決定垂直分隔位置 ---
     if len(v_inner) >= 2:
         # 有黑框的正常情況：兩條線夾著間隙（左格右框線 + 右格左框線）
-        v_split_left = v_inner[0][0] - 1      # 左半格的右邊界
-        v_split_right = v_inner[-1][1] + 1     # 右半格的左邊界
+        v_split_left = v_inner[0][0] - 1 - aa_pad
+        v_split_right = v_inner[-1][1] + 1 + aa_pad
     else:
         # 無黑框 / 薄分隔線：只有一條線
-        v_split_left = v_inner[0][0] - 1
-        v_split_right = v_inner[0][1] + 1
+        v_split_left = v_inner[0][0] - 1 - aa_pad
+        v_split_right = v_inner[0][1] + 1 + aa_pad
 
     # --- 決定水平分隔位置 ---
     if len(h_inner) >= 2:
-        h_split_top = h_inner[0][0] - 1        # 上半格的下邊界
-        h_split_bottom = h_inner[-1][1] + 1     # 下半格的上邊界
+        h_split_top = h_inner[0][0] - 1 - aa_pad
+        h_split_bottom = h_inner[-1][1] + 1 + aa_pad
     else:
-        h_split_top = h_inner[0][0] - 1
-        h_split_bottom = h_inner[0][1] + 1
+        h_split_top = h_inner[0][0] - 1 - aa_pad
+        h_split_bottom = h_inner[0][1] + 1 + aa_pad
 
     # --- 裁切四格 ---
     panels = [
