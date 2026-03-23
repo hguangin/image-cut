@@ -32,8 +32,13 @@ def detect_by_separator_lines(gray: np.ndarray, img: np.ndarray) -> Optional[Lis
     col_profile = np.mean(gray, axis=0)  # shape: (w,)  每列x的平均亮度
     row_profile = np.mean(gray, axis=1)  # shape: (h,)  每行y的平均亮度
 
-    def find_dark_segments(profile: np.ndarray, threshold: int = 80) -> List[Tuple[int, int]]:
-        """找出亮度低於閾值的連續暗區段"""
+    def find_dark_segments(profile: np.ndarray, threshold: int = 50) -> List[Tuple[int, int]]:
+        """
+        找出亮度低於閾值的連續暗區段。
+        threshold 設為 50（而非 80），避免漫畫中的暗色場景
+        （如夜景、暗房）被誤判為分隔線。真正的分隔線整列/整行
+        平均亮度通常在 10~40 之間，遠低於 50。
+        """
         segments = []
         in_dark = False
         start = 0
@@ -50,6 +55,29 @@ def detect_by_separator_lines(gray: np.ndarray, img: np.ndarray) -> Optional[Lis
             segments.append((start, len(profile) - 1))
         return segments
 
+    def pick_separator_lines(
+        inner_segs: List[Tuple[int, int]], dim_size: int
+    ) -> List[Tuple[int, int]]:
+        """
+        從中間暗帶中挑出最可能是分隔線的 1~2 條。
+        策略：優先選最靠近圖片正中間的暗帶。
+        如果有兩條暗帶彼此很近（< 圖寬/高 10%），視為同一組雙線分隔。
+        """
+        if len(inner_segs) <= 2:
+            return inner_segs
+
+        center = dim_size / 2
+        scored = sorted(inner_segs, key=lambda seg: abs((seg[0] + seg[1]) / 2 - center))
+
+        result = [scored[0]]
+        if len(scored) > 1:
+            gap = abs(scored[1][0] - scored[0][1])
+            if gap < dim_size * 0.1:
+                result.append(scored[1])
+                result.sort()
+
+        return result
+
     v_segs = find_dark_segments(col_profile)
     h_segs = find_dark_segments(row_profile)
 
@@ -63,6 +91,10 @@ def detect_by_separator_lines(gray: np.ndarray, img: np.ndarray) -> Optional[Lis
     # 至少要有 1 條垂直 + 1 條水平的中間分隔線才能切四宮格
     if len(v_inner) < 1 or len(h_inner) < 1:
         return None
+
+    # 如果偵測到過多暗帶（可能是暗色場景干擾），挑選最靠近中心的
+    v_inner = pick_separator_lines(v_inner, w)
+    h_inner = pick_separator_lines(h_inner, h)
 
     # --- 決定四邊邊界 ---
     # 有外框 → 內容從外框線內側開始
